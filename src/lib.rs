@@ -10,6 +10,21 @@ use std::str::FromStr;
 
 mod jws;
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OrderStatus {
+    Pending,
+    Valid,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Order {
+    pub status: OrderStatus,
+    pub authorizations: Vec<String>,
+    pub finalize: String,
+    pub certificate: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct Account {
     pub key_pair: EcdsaKeyPair,
@@ -18,12 +33,11 @@ pub struct Account {
 }
 
 impl Account {
-    pub async fn new_order(&self, domain: impl ToString) -> Result<(), Box<dyn Error>> {
+    pub async fn new_order(&self, domain: impl ToString) -> Result<Order, Box<dyn Error>> {
         let payload = format!("{{\"identifiers\":[{{\"type\":\"dns\",\"value\":{}}}]}}", serde_json::to_string(&serde_json::Value::String(domain.to_string()))?);
         let body = sign(&self.key_pair, Some(&self.kid), self.directory.nonce().await?, &self.directory.new_order, &payload)?;
         let mut response = https(&self.directory.new_order, Method::Post, Some(body)).await?;
-        dbg!(response.body_string().await?);
-        Ok(())
+        Ok(serde_json::from_str(&response.body_string().await?)?)
     }
 }
 
