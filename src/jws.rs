@@ -1,10 +1,16 @@
-use serde::{Serialize};
 use base64::URL_SAFE_NO_PAD;
-use ring::signature::{EcdsaKeyPair, KeyPair};
 use ring::rand::SystemRandom;
+use ring::signature::{EcdsaKeyPair, KeyPair};
+use serde::Serialize;
 use std::error::Error;
 
-pub(crate) fn sign(key: &EcdsaKeyPair, kid: Option<&str>, nonce: String, url: &str, payload: &str) -> Result<String, Box<dyn Error>> {
+pub(crate) fn sign(
+    key: &EcdsaKeyPair,
+    kid: Option<&str>,
+    nonce: String,
+    url: &str,
+    payload: &str,
+) -> Result<String, Box<dyn Error>> {
     let jwk = match kid {
         None => Some(Jwk::new(key)),
         Some(_) => None,
@@ -14,12 +20,16 @@ pub(crate) fn sign(key: &EcdsaKeyPair, kid: Option<&str>, nonce: String, url: &s
     let combined = format!("{}.{}", &protected, &payload);
     let signature = key.sign(&SystemRandom::new(), combined.as_bytes()).unwrap();
     let signature = base64::encode_config(signature.as_ref(), URL_SAFE_NO_PAD);
-    let body = Body { protected, payload, signature };
+    let body = Body {
+        protected,
+        payload,
+        signature,
+    };
     Ok(serde_json::to_string(&body).unwrap())
 }
 
 #[derive(Serialize)]
-struct Body{
+struct Body {
     protected: String,
     payload: String,
     signature: String,
@@ -38,7 +48,7 @@ struct Protected<'a> {
 
 impl<'a> Protected<'a> {
     fn base64(jwk: Option<Jwk>, kid: Option<&'a str>, nonce: String, url: &'a str) -> String {
-        let protected = Self{
+        let protected = Self {
             alg: "ES256",
             jwk,
             kid,

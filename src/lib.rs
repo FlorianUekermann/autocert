@@ -1,28 +1,43 @@
-use http_types::{Request, Method, Response, Url};
+use crate::jws::sign;
 use async_std::net::TcpStream;
 use async_tls::TlsConnector;
-use std::error::Error;
-use serde::Deserialize;
-use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use http_types::{Method, Request, Response, Url};
 use ring::rand::SystemRandom;
-use crate::jws::sign;
+use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use serde::Deserialize;
+use std::error::Error;
 use std::str::FromStr;
 
 mod jws;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum OrderStatus {
+pub enum Status {
     Pending,
     Valid,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Order {
-    pub status: OrderStatus,
+    pub status: Status,
     pub authorizations: Vec<String>,
     pub finalize: String,
     pub certificate: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Auth {
+    pub status: Status,
+    pub challenges: Vec<Challenge>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Challenge {
+    #[serde(rename = "type")]
+    pub typ: String,
+    pub url: String,
+    pub status: Status,
+    pub token: String,
 }
 
 #[derive(Debug)]
@@ -33,11 +48,29 @@ pub struct Account {
 }
 
 impl Account {
+    async fn request(&self, url: impl AsRef<str>, payload: &str) -> Result<String, Box<dyn Error>> {
+        let body = sign(
+            &self.key_pair,
+            Some(&self.kid),
+            self.directory.nonce().await?,
+            url.as_ref(),
+            payload,
+        )?;
+        let mut response = https(url.as_ref(), Method::Post, Some(body)).await?;
+        Ok(response.body_string().await?)
+    }
     pub async fn new_order(&self, domain: impl ToString) -> Result<Order, Box<dyn Error>> {
-        let payload = format!("{{\"identifiers\":[{{\"type\":\"dns\",\"value\":{}}}]}}", serde_json::to_string(&serde_json::Value::String(domain.to_string()))?);
-        let body = sign(&self.key_pair, Some(&self.kid), self.directory.nonce().await?, &self.directory.new_order, &payload)?;
-        let mut response = https(&self.directory.new_order, Method::Post, Some(body)).await?;
-        Ok(serde_json::from_str(&response.body_string().await?)?)
+        let payload = format!(
+            "{{\"identifiers\":[{{\"type\":\"dns\",\"value\":{}}}]}}",
+            serde_json::to_string(&serde_json::Value::String(domain.to_string()))?
+        );
+        Ok(serde_json::from_str(
+            &self.request(&self.directory.new_order, &payload).await?,
+        )?)
+    }
+    pub async fn auth(&self, url: impl AsRef<str>) -> Result<Auth, Box<dyn Error>> {
+        let payload = "".to_string();
+        Ok(serde_json::from_str(&self.request(url, &payload).await?)?)
     }
 }
 
@@ -61,15 +94,30 @@ impl Directory {
     pub async fn create_account(&self) -> Result<Account, Box<dyn Error>> {
         let rng = SystemRandom::new();
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
-        let key_pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref()).unwrap();
-        let body = sign(&key_pair, None, self.nonce().await?, &self.new_account, "{\"termsOfServiceAgreed\": true}")?;
+        let key_pair =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref()).unwrap();
+        let body = sign(
+            &key_pair,
+            None,
+            self.nonce().await?,
+            &self.new_account,
+            "{\"termsOfServiceAgreed\": true}",
+        )?;
         let response = https(&self.new_account, Method::Post, Some(body)).await?;
         let kid = response.header("Location").unwrap().last().to_string();
-        Ok(Account { key_pair, kid , directory: self.clone()})
+        Ok(Account {
+            key_pair,
+            kid,
+            directory: self.clone(),
+        })
     }
 }
 
-async fn https(url: impl AsRef<str>, method: Method, body: Option<String>) -> Result<Response, Box<dyn Error>> {
+async fn https(
+    url: impl AsRef<str>,
+    method: Method,
+    body: Option<String>,
+) -> Result<Response, Box<dyn Error>> {
     let mut request = Request::new(method, Url::from_str(url.as_ref())?);
     if let Some(body) = body {
         request.set_body(body);
