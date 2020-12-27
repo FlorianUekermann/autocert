@@ -9,12 +9,24 @@ use std::error::Error;
 use std::str::FromStr;
 
 mod jws;
+mod resolver;
+pub use resolver::*;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Status {
     Pending,
     Valid,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+pub enum ChallengeType {
+    #[serde(rename = "http-01")]
+    Http01,
+    #[serde(rename = "dns-01")]
+    Dns01,
+    #[serde(rename = "tls-alpn-01")]
+    TlsAlpn01,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +46,7 @@ pub struct Auth {
 #[derive(Debug, Deserialize)]
 pub struct Challenge {
     #[serde(rename = "type")]
-    pub typ: String,
+    pub typ: ChallengeType,
     pub url: String,
     pub status: Status,
     pub token: String,
@@ -71,6 +83,11 @@ impl Account {
     pub async fn auth(&self, url: impl AsRef<str>) -> Result<Auth, Box<dyn Error>> {
         let payload = "".to_string();
         Ok(serde_json::from_str(&self.request(url, &payload).await?)?)
+    }
+    pub async fn challenge(&self, challenge: &Challenge) -> Result<(), Box<dyn Error>> {
+        let payload = "{}".to_string();
+        dbg!(&self.request(&challenge.url, &payload).await?);
+        Ok(())
     }
 }
 
