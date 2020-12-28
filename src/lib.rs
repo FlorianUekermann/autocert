@@ -1,6 +1,6 @@
-use crate::jws::sign;
+use crate::jws::{key_authorization_sha256, sign};
+use async_rustls::TlsConnector;
 use async_std::net::TcpStream;
-use async_tls::TlsConnector;
 use http_types::{Method, Request, Response, Url};
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
@@ -10,13 +10,20 @@ use std::str::FromStr;
 
 mod jws;
 mod resolver;
+use async_rustls::webpki::DNSNameRef;
+use rcgen::{Certificate, CustomExtension, PKCS_ECDSA_P256_SHA256};
 pub use resolver::*;
+use rustls::sign::{any_ecdsa_type, CertifiedKey};
+use rustls::{ClientConfig, PrivateKey};
+use std::sync::Arc;
+use webpki_roots::TLS_SERVER_ROOTS;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Status {
     Pending,
     Valid,
+    Invalid,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -40,7 +47,14 @@ pub struct Order {
 #[derive(Debug, Deserialize)]
 pub struct Auth {
     pub status: Status,
+    pub identifier: Identifier,
     pub challenges: Vec<Challenge>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "camelCase")]
+pub enum Identifier {
+    Dns(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,12 +96,42 @@ impl Account {
     }
     pub async fn auth(&self, url: impl AsRef<str>) -> Result<Auth, Box<dyn Error>> {
         let payload = "".to_string();
-        Ok(serde_json::from_str(&self.request(url, &payload).await?)?)
+        let response = self.request(url, &payload).await;
+        dbg!(&response);
+        Ok(serde_json::from_str(&response?)?)
     }
     pub async fn challenge(&self, challenge: &Challenge) -> Result<(), Box<dyn Error>> {
         let payload = "{}".to_string();
         dbg!(&self.request(&challenge.url, &payload).await?);
         Ok(())
+    }
+    pub fn tls_alpn_01<'a>(
+        &self,
+        auth: &'a Auth,
+    ) -> Result<(&'a Challenge, CertifiedKey), Box<dyn Error>> {
+        let challenge = auth
+            .challenges
+            .iter()
+            .filter(|c| c.typ == ChallengeType::TlsAlpn01)
+            .next();
+        let challenge = match challenge {
+            Some(challenge) => challenge,
+            None => panic!("TODO: no tls challenge error"),
+        };
+        let domain = match &auth.identifier {
+            Identifier::Dns(domain) => domain.clone(),
+        };
+        let mut params = rcgen::CertificateParams::new(vec![domain]);
+        let key_auth = key_authorization_sha256(&self.key_pair, &*challenge.token);
+        params.alg = &PKCS_ECDSA_P256_SHA256;
+        params.custom_extensions = vec![CustomExtension::new_acme_identifier(&key_auth)];
+        let certificate = Certificate::from_params(params)?;
+        let pk = PrivateKey(certificate.serialize_private_key_der());
+        let certified_key = CertifiedKey::new(
+            vec![rustls::Certificate(certificate.serialize_der()?)],
+            Arc::new(any_ecdsa_type(&pk).unwrap()),
+        );
+        Ok((challenge, certified_key))
     }
 }
 
@@ -143,7 +187,14 @@ async fn https(
     let host = request.host().unwrap();
     let host_port = (host, request.url().port_or_known_default().unwrap());
     let tcp = TcpStream::connect(host_port).await?;
-    let tls = TlsConnector::default().connect(host, tcp).await?;
+    let domain = DNSNameRef::try_from_ascii_str(host)?;
+    let mut config = ClientConfig::default();
+    config
+        .root_store
+        .add_server_trust_anchors(&TLS_SERVER_ROOTS);
+    let tls = TlsConnector::from(Arc::new(config))
+        .connect(domain, tcp)
+        .await?;
     let mut response = async_h1::connect(tls, request).await?;
     if !response.status().is_success() {
         let body = response.body_string().await;

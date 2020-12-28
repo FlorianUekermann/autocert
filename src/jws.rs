@@ -1,7 +1,9 @@
 use base64::URL_SAFE_NO_PAD;
+use ring::digest::{digest, SHA256};
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair};
 use serde::Serialize;
+use std::convert::TryInto;
 use std::error::Error;
 
 pub(crate) fn sign(
@@ -26,6 +28,15 @@ pub(crate) fn sign(
         signature,
     };
     Ok(serde_json::to_string(&body).unwrap())
+}
+
+pub(crate) fn key_authorization_sha256(key: &EcdsaKeyPair, token: &str) -> [u8; 32] {
+    let jwk = Jwk::new(key);
+    let key_authorization = format!("{}.{}", token, jwk.thumb_sha256_base64());
+    digest(&SHA256, key_authorization.as_bytes())
+        .as_ref()
+        .try_into()
+        .unwrap()
 }
 
 #[derive(Serialize)]
@@ -83,4 +94,23 @@ impl Jwk {
             y: base64::encode_config(y, URL_SAFE_NO_PAD),
         }
     }
+    pub(crate) fn thumb_sha256_base64(&self) -> String {
+        let jwk_thumb = JwkThumb {
+            crv: self.crv,
+            kty: self.kty,
+            x: &self.x,
+            y: &self.y,
+        };
+        let json = serde_json::to_vec(&jwk_thumb).unwrap();
+        let hash = digest(&SHA256, &json);
+        base64::encode_config(hash, URL_SAFE_NO_PAD)
+    }
+}
+
+#[derive(Serialize)]
+struct JwkThumb<'a> {
+    crv: &'a str,
+    kty: &'a str,
+    x: &'a str,
+    y: &'a str,
 }
