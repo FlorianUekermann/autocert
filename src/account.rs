@@ -2,6 +2,7 @@ use crate::*;
 use async_rustls::rustls::sign::{any_ecdsa_type, CertifiedKey};
 use async_rustls::rustls::PrivateKey;
 use async_std::path::PathBuf;
+use base64::URL_SAFE_NO_PAD;
 use http_types::Method;
 use rcgen::{Certificate, CustomExtension, PKCS_ECDSA_P256_SHA256};
 use ring::signature::EcdsaKeyPair;
@@ -45,7 +46,16 @@ impl Account {
     }
     pub async fn challenge(&self, challenge: &Challenge) -> Result<(), Box<dyn Error>> {
         let payload = "{}".to_string();
-        dbg!(&self.request(&challenge.url, &payload).await?);
+        self.request(&challenge.url, &payload).await?;
+        Ok(())
+    }
+    pub async fn finalize(&self, url: impl AsRef<str>, csr: Vec<u8>) -> Result<(), Box<dyn Error>> {
+        let payload = format!(
+            "{{\"url\":\"{}\"}}",
+            base64::encode_config(csr, URL_SAFE_NO_PAD)
+        );
+        dbg!(&payload);
+        dbg!(self.request(&url, &payload).await?);
         Ok(())
     }
     pub fn tls_alpn_01<'a>(

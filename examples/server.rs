@@ -1,15 +1,13 @@
-use async_rustls::rustls::{NoClientAuth, ServerConfig, Session};
-use async_rustls::TlsAcceptor;
+use async_rustls::rustls::{NoClientAuth, ServerConfig};
 use async_std::net::TcpListener;
 use async_std::task;
 use autocert::{
-    Directory, ResolvesServerCertUsingAcme, ACME_TLS_ALPN_NAME, LETS_ENCRYPT_STAGING_DIRECTORY,
+    Directory, ResolvesServerCertUsingAcme, TlsAcceptor, LETS_ENCRYPT_STAGING_DIRECTORY,
 };
-use futures::join;
 use futures::StreamExt;
+use futures::{join, AsyncWriteExt};
 use log;
 use std::error::Error;
-use std::sync::Arc;
 
 fn main() {
     simple_logger::SimpleLogger::new()
@@ -25,31 +23,28 @@ fn main() {
             .await
             .unwrap()
     });
-    let resolver = ResolvesServerCertUsingAcme::new(account);
-    let clone = resolver.clone();
+    let config = ServerConfig::new(NoClientAuth::new());
+    let resolver = ResolvesServerCertUsingAcme::new(account, "fehrbelliner.ddns.net".to_string());
+    let acceptor = TlsAcceptor::new(config, resolver.clone());
     task::block_on(async move {
         join!(
             async move {
-                ResolvesServerCertUsingAcme::run(clone).await;
+                ResolvesServerCertUsingAcme::run(resolver).await;
             },
-            async move { serve(resolver).await.unwrap() }
+            async move { serve(acceptor).await.unwrap() }
         );
     });
 }
 
-async fn serve(resolver: Arc<ResolvesServerCertUsingAcme>) -> Result<(), Box<dyn Error>> {
+async fn serve(acceptor: TlsAcceptor) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind("192.168.0.103:4433").await?;
-    let mut config = ServerConfig::new(NoClientAuth::new());
-    config.cert_resolver = resolver.clone();
-    config.alpn_protocols.push(ACME_TLS_ALPN_NAME.to_vec());
-    let acceptor = TlsAcceptor::from(Arc::new(config));
-    log::info!("listening");
     while let Some(tcp) = listener.incoming().next().await {
         let acceptor = acceptor.clone();
-        let mut tls = acceptor.accept(tcp?).await?;
-        log::info!("success");
-        dbg!(tls.get_ref().1.get_alpn_protocol() == Some(ACME_TLS_ALPN_NAME));
-        // tls.write_all(b"asdfadsfds").await?;
+        task::spawn(async move {
+            if let Some(mut tls) = acceptor.accept(tcp.unwrap()).await.unwrap() {
+                tls.write_all(b"asdfadsfds").await.unwrap();
+            }
+        });
     }
     Ok(())
 }
