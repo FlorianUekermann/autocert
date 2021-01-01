@@ -34,9 +34,9 @@ impl Account {
             "{{\"identifiers\":[{{\"type\":\"dns\",\"value\":{}}}]}}",
             serde_json::to_string(&serde_json::Value::String(domain.to_string()))?
         );
-        Ok(serde_json::from_str(
-            &self.request(&self.directory.new_order, &payload).await?,
-        )?)
+        let response = self.request(&self.directory.new_order, &payload).await;
+        dbg!(&response);
+        Ok(serde_json::from_str(&response?)?)
     }
     pub async fn auth(&self, url: impl AsRef<str>) -> Result<Auth, Box<dyn Error>> {
         let payload = "".to_string();
@@ -49,14 +49,21 @@ impl Account {
         self.request(&challenge.url, &payload).await?;
         Ok(())
     }
-    pub async fn finalize(&self, url: impl AsRef<str>, csr: Vec<u8>) -> Result<(), Box<dyn Error>> {
+    pub async fn finalize(
+        &self,
+        url: impl AsRef<str>,
+        csr: Vec<u8>,
+    ) -> Result<Order, Box<dyn Error>> {
         let payload = format!(
-            "{{\"url\":\"{}\"}}",
+            "{{\"csr\":\"{}\"}}",
             base64::encode_config(csr, URL_SAFE_NO_PAD)
         );
-        dbg!(&payload);
-        dbg!(self.request(&url, &payload).await?);
-        Ok(())
+        let response = self.request(&url, &payload).await;
+        dbg!(&response);
+        Ok(serde_json::from_str(&response?)?)
+    }
+    pub async fn certificate(&self, url: impl AsRef<str>) -> Result<String, Box<dyn Error>> {
+        self.request(&url, "").await
     }
     pub fn tls_alpn_01<'a>(
         &self,

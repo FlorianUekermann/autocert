@@ -20,12 +20,17 @@ pub enum ChallengeType {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Order {
-    pub status: Status,
-    pub authorizations: Vec<String>,
-    pub finalize: String,
-    pub certificate: Option<String>,
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum Order {
+    Pending { authorizations: Vec<String> },
+    Ready { finalize: String },
+    Valid { certificate: String },
 }
+
+//    pub status: Status,
+//     pub authorizations: Vec<String>,
+//     pub finalize: String,
+//     pub certificate: Option<String>,
 
 #[derive(Debug, Deserialize)]
 pub struct Auth {
@@ -34,7 +39,7 @@ pub struct Auth {
     pub challenges: Vec<Challenge>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "camelCase")]
 pub enum Identifier {
     Dns(String),
