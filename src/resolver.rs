@@ -1,73 +1,108 @@
-use crate::{Account, Identifier, Order, ACME_TLS_ALPN_NAME};
+use crate::{Account, Auth, Directory, Identifier, Order, ACME_TLS_ALPN_NAME};
 use async_rustls::rustls::sign::{any_ecdsa_type, CertifiedKey};
 use async_rustls::rustls::Certificate as RustlsCertificate;
 use async_rustls::rustls::{ClientHello, PrivateKey, ResolvesServerCert};
+use async_std::task::sleep;
+use futures::future::try_join_all;
 use rcgen::{CertificateParams, DistinguishedName};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub struct ResolvesServerCertUsingAcme {
-    domain: String,
-    account: Account,
-    csr_key: Mutex<Option<PrivateKey>>,
     cert_key: Mutex<Option<CertifiedKey>>,
     auth_keys: Mutex<BTreeMap<String, CertifiedKey>>,
 }
 
 impl ResolvesServerCertUsingAcme {
-    pub fn new(account: Account, domain: String) -> Arc<ResolvesServerCertUsingAcme> {
+    pub fn new() -> Arc<ResolvesServerCertUsingAcme> {
         Arc::new(ResolvesServerCertUsingAcme {
-            domain,
-            account,
-            csr_key: Mutex::new(None),
             cert_key: Mutex::new(None),
             auth_keys: Mutex::new(BTreeMap::new()),
         })
     }
-    pub async fn run(resolver: Arc<ResolvesServerCertUsingAcme>) {
-        resolver.order_next().await.unwrap();
+    pub async fn run(&self, directory_url: impl AsRef<str>, domains: Vec<String>) {
+        self.order(directory_url, &domains).await.unwrap();
     }
-    pub(crate) async fn order_next(&self) -> Result<(), Box<dyn Error>> {
-        let mut order = Some(self.account.new_order(&self.domain).await?);
-        while let Some(o) = order.take() {
-            dbg!(&o);
-            order = match o {
-                Order::Pending { authorizations } => {
-                    for auth_url in authorizations {
-                        let auth = self.account.auth(auth_url).await?;
-                        let (challenge, auth_key) = self.account.tls_alpn_01(&auth)?;
-                        let Identifier::Dns(domain) = auth.identifier.clone();
-                        self.auth_keys.lock().unwrap().insert(domain, auth_key);
-                        self.account.challenge(challenge).await?;
-                        dbg!(&auth);
-                    }
-                    None
+    async fn order(
+        &self,
+        directory_url: impl AsRef<str>,
+        domains: &Vec<String>,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut params = CertificateParams::new(domains.clone());
+        params.distinguished_name = DistinguishedName::new();
+        let cert = rcgen::Certificate::from_params(params).unwrap();
+        let pk = PrivateKey(cert.serialize_private_key_der());
+        let directory = Directory::discover(directory_url).await?;
+        let account = directory.create_account(Some("test-persist")).await?;
+        let mut order = account.new_order(domains.clone()).await?;
+        loop {
+            order = match order {
+                Order::Pending {
+                    authorizations,
+                    finalize,
+                } => {
+                    let auth_futures = authorizations
+                        .iter()
+                        .map(|url| self.authorize(&account, url));
+                    try_join_all(auth_futures).await?;
+                    log::info!("completed all authorizations");
+                    Order::Ready { finalize }
                 }
                 Order::Ready { finalize } => {
-                    let mut params = CertificateParams::new(vec![self.domain.clone()]);
-                    params.distinguished_name = DistinguishedName::new();
-                    let cert = rcgen::Certificate::from_params(params).unwrap();
-                    let pk = PrivateKey(cert.serialize_private_key_der());
-                    self.csr_key.lock().unwrap().replace(pk);
+                    log::info!("sending csr");
                     let csr = cert.serialize_request_der().unwrap();
-                    Some(self.account.finalize(finalize, csr).await?)
+                    account.finalize(finalize, csr).await?
                 }
                 Order::Valid { certificate } => {
-                    let cert = self.account.certificate(certificate).await?;
+                    log::info!("download certificate");
+                    let cert = account.certificate(certificate).await?;
                     let cert = pem::parse(cert)?.contents;
-                    let pk = self.csr_key.lock().unwrap().take().unwrap();
                     let cert_key = CertifiedKey::new(
                         vec![RustlsCertificate(cert)],
                         Arc::new(any_ecdsa_type(&pk).unwrap()),
                     );
                     self.cert_key.lock().unwrap().replace(cert_key);
-                    None
+                    log::info!("Done");
+                    return Ok(());
                 }
+                Order::Invalid => unimplemented!("invalid order"),
             }
         }
-        Ok(())
+    }
+    async fn authorize(&self, account: &Account, url: &String) -> Result<(), Box<dyn Error>> {
+        let (domain, challenge_url) = match account.auth(url).await? {
+            Auth::Pending {
+                identifier,
+                challenges,
+            } => {
+                let Identifier::Dns(domain) = identifier;
+                log::info!("trigger challenge for {}", &domain);
+                let (challenge, auth_key) = account.tls_alpn_01(&challenges, domain.clone())?;
+                self.auth_keys
+                    .lock()
+                    .unwrap()
+                    .insert(domain.clone(), auth_key);
+                account.challenge(&challenge.url).await?;
+                (challenge.url.clone(), domain)
+            }
+            Auth::Valid => return Ok(()),
+            _ => unimplemented!("bad auth"),
+        };
+        for i in 0u64..5 {
+            sleep(Duration::from_secs(1 << i)).await;
+            match account.auth(url).await? {
+                Auth::Pending { .. } => {
+                    log::info!("authorization for {} still pending", &domain);
+                    account.challenge(&challenge_url).await?
+                }
+                Auth::Valid => return Ok(()),
+                _ => unimplemented!("bad auth"),
+            }
+        }
+        unimplemented!("timeout")
     }
 }
 

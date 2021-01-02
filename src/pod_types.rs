@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,24 +22,33 @@ pub enum ChallengeType {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum Order {
-    Pending { authorizations: Vec<String> },
-    Ready { finalize: String },
-    Valid { certificate: String },
+    Pending {
+        authorizations: Vec<String>,
+        finalize: String,
+    },
+    Ready {
+        finalize: String,
+    },
+    Valid {
+        certificate: String,
+    },
+    Invalid,
 }
-
-//    pub status: Status,
-//     pub authorizations: Vec<String>,
-//     pub finalize: String,
-//     pub certificate: Option<String>,
 
 #[derive(Debug, Deserialize)]
-pub struct Auth {
-    pub status: Status,
-    pub identifier: Identifier,
-    pub challenges: Vec<Challenge>,
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum Auth {
+    Pending {
+        identifier: Identifier,
+        challenges: Vec<Challenge>,
+    },
+    Valid,
+    Invalid,
+    Revoked,
+    Expired,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "camelCase")]
 pub enum Identifier {
     Dns(String),

@@ -27,26 +27,23 @@ impl Account {
             payload,
         )?;
         let mut response = https(url.as_ref(), Method::Post, Some(body)).await?;
-        Ok(response.body_string().await?)
+        let body = response.body_string().await?;
+        log::debug!("response: {:?}", body);
+        Ok(body)
     }
-    pub async fn new_order(&self, domain: impl ToString) -> Result<Order, Box<dyn Error>> {
-        let payload = format!(
-            "{{\"identifiers\":[{{\"type\":\"dns\",\"value\":{}}}]}}",
-            serde_json::to_string(&serde_json::Value::String(domain.to_string()))?
-        );
+    pub async fn new_order(&self, domains: Vec<String>) -> Result<Order, Box<dyn Error>> {
+        let domains: Vec<Identifier> = domains.into_iter().map(|d| Identifier::Dns(d)).collect();
+        let payload = format!("{{\"identifiers\":{}}}", serde_json::to_string(&domains)?);
         let response = self.request(&self.directory.new_order, &payload).await;
-        dbg!(&response);
         Ok(serde_json::from_str(&response?)?)
     }
     pub async fn auth(&self, url: impl AsRef<str>) -> Result<Auth, Box<dyn Error>> {
         let payload = "".to_string();
         let response = self.request(url, &payload).await;
-        dbg!(&response);
         Ok(serde_json::from_str(&response?)?)
     }
-    pub async fn challenge(&self, challenge: &Challenge) -> Result<(), Box<dyn Error>> {
-        let payload = "{}".to_string();
-        self.request(&challenge.url, &payload).await?;
+    pub async fn challenge(&self, url: impl AsRef<str>) -> Result<(), Box<dyn Error>> {
+        self.request(&url, "{}").await?;
         Ok(())
     }
     pub async fn finalize(
@@ -59,7 +56,6 @@ impl Account {
             base64::encode_config(csr, URL_SAFE_NO_PAD)
         );
         let response = self.request(&url, &payload).await;
-        dbg!(&response);
         Ok(serde_json::from_str(&response?)?)
     }
     pub async fn certificate(&self, url: impl AsRef<str>) -> Result<String, Box<dyn Error>> {
@@ -67,19 +63,16 @@ impl Account {
     }
     pub fn tls_alpn_01<'a>(
         &self,
-        auth: &'a Auth,
+        challenges: &'a Vec<Challenge>,
+        domain: String,
     ) -> Result<(&'a Challenge, CertifiedKey), Box<dyn Error>> {
-        let challenge = auth
-            .challenges
+        let challenge = challenges
             .iter()
             .filter(|c| c.typ == ChallengeType::TlsAlpn01)
             .next();
         let challenge = match challenge {
             Some(challenge) => challenge,
             None => panic!("TODO: no tls challenge error"),
-        };
-        let domain = match &auth.identifier {
-            Identifier::Dns(domain) => domain.clone(),
         };
         let mut params = rcgen::CertificateParams::new(vec![domain]);
         let key_auth = key_authorization_sha256(&self.key_pair, &*challenge.token);
