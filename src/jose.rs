@@ -1,10 +1,9 @@
 use base64::URL_SAFE_NO_PAD;
-use ring::digest::{digest, SHA256};
+use ring::digest::{digest, Digest, SHA256};
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair};
 use serde::Serialize;
-use std::convert::TryInto;
-use std::error::Error;
+use thiserror::Error;
 
 pub(crate) fn sign(
     key: &EcdsaKeyPair,
@@ -12,31 +11,31 @@ pub(crate) fn sign(
     nonce: String,
     url: &str,
     payload: &str,
-) -> Result<String, Box<dyn Error>> {
+) -> Result<String, JoseError> {
     let jwk = match kid {
         None => Some(Jwk::new(key)),
         Some(_) => None,
     };
-    let protected = Protected::base64(jwk, kid, nonce, url);
+    let protected = Protected::base64(jwk, kid, nonce, url)?;
     let payload = base64::encode_config(payload, URL_SAFE_NO_PAD);
     let combined = format!("{}.{}", &protected, &payload);
-    let signature = key.sign(&SystemRandom::new(), combined.as_bytes()).unwrap();
+    let signature = key.sign(&SystemRandom::new(), combined.as_bytes())?;
     let signature = base64::encode_config(signature.as_ref(), URL_SAFE_NO_PAD);
     let body = Body {
         protected,
         payload,
         signature,
     };
-    Ok(serde_json::to_string(&body).unwrap())
+    Ok(serde_json::to_string(&body)?)
 }
 
-pub(crate) fn key_authorization_sha256(key: &EcdsaKeyPair, token: &str) -> [u8; 32] {
+pub(crate) fn key_authorization_sha256(
+    key: &EcdsaKeyPair,
+    token: &str,
+) -> Result<Digest, JoseError> {
     let jwk = Jwk::new(key);
-    let key_authorization = format!("{}.{}", token, jwk.thumb_sha256_base64());
-    digest(&SHA256, key_authorization.as_bytes())
-        .as_ref()
-        .try_into()
-        .unwrap()
+    let key_authorization = format!("{}.{}", token, jwk.thumb_sha256_base64()?);
+    Ok(digest(&SHA256, key_authorization.as_bytes()))
 }
 
 #[derive(Serialize)]
@@ -58,7 +57,12 @@ struct Protected<'a> {
 }
 
 impl<'a> Protected<'a> {
-    fn base64(jwk: Option<Jwk>, kid: Option<&'a str>, nonce: String, url: &'a str) -> String {
+    fn base64(
+        jwk: Option<Jwk>,
+        kid: Option<&'a str>,
+        nonce: String,
+        url: &'a str,
+    ) -> Result<String, JoseError> {
         let protected = Self {
             alg: "ES256",
             jwk,
@@ -66,8 +70,8 @@ impl<'a> Protected<'a> {
             nonce,
             url,
         };
-        let protected = serde_json::to_vec(&protected).unwrap();
-        base64::encode_config(protected, URL_SAFE_NO_PAD)
+        let protected = serde_json::to_vec(&protected)?;
+        Ok(base64::encode_config(protected, URL_SAFE_NO_PAD))
     }
 }
 
@@ -94,16 +98,16 @@ impl Jwk {
             y: base64::encode_config(y, URL_SAFE_NO_PAD),
         }
     }
-    pub(crate) fn thumb_sha256_base64(&self) -> String {
+    pub(crate) fn thumb_sha256_base64(&self) -> Result<String, JoseError> {
         let jwk_thumb = JwkThumb {
             crv: self.crv,
             kty: self.kty,
             x: &self.x,
             y: &self.y,
         };
-        let json = serde_json::to_vec(&jwk_thumb).unwrap();
+        let json = serde_json::to_vec(&jwk_thumb)?;
         let hash = digest(&SHA256, &json);
-        base64::encode_config(hash, URL_SAFE_NO_PAD)
+        Ok(base64::encode_config(hash, URL_SAFE_NO_PAD))
     }
 }
 
@@ -113,4 +117,12 @@ struct JwkThumb<'a> {
     kty: &'a str,
     x: &'a str,
     y: &'a str,
+}
+
+#[derive(Error, Debug)]
+pub enum JoseError {
+    #[error("json serialization failed: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("crypto error: {0}")]
+    Crypto(#[from] ring::error::Unspecified),
 }

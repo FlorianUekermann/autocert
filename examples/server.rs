@@ -1,7 +1,7 @@
 use async_rustls::rustls::{NoClientAuth, ServerConfig};
 use async_std::net::TcpListener;
 use async_std::task;
-use autocert::{ResolvesServerCertUsingAcme, TlsAcceptor, LETS_ENCRYPT_STAGING_DIRECTORY};
+use autocert::{acme::LETS_ENCRYPT_STAGING_DIRECTORY, ResolvesServerCertUsingAcme, TlsAcceptor};
 use futures::StreamExt;
 use futures::{join, AsyncWriteExt};
 use log;
@@ -14,9 +14,9 @@ fn main() {
         .init()
         .unwrap();
 
-    let config = ServerConfig::new(NoClientAuth::new());
     let resolver = ResolvesServerCertUsingAcme::new();
-    let acceptor = TlsAcceptor::new(config);
+    let config = ServerConfig::new(NoClientAuth::new());
+    let acceptor = TlsAcceptor::new(config, resolver.clone());
     task::block_on(async move {
         join!(
             async move {

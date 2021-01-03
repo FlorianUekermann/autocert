@@ -1,12 +1,11 @@
 use async_std::fs;
 use async_std::io::ErrorKind;
 use async_std::path::Path;
-use std::error::Error;
 
 pub(crate) async fn read_if_exist(
     dir: impl AsRef<Path>,
     file: impl AsRef<Path>,
-) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+) -> Result<Option<Vec<u8>>, std::io::Error> {
     let path = dir.as_ref().join(file);
     match fs::read(path).await {
         Ok(content) => Ok(Some(content)),
@@ -21,7 +20,7 @@ pub(crate) async fn write(
     dir: impl AsRef<Path>,
     file: impl AsRef<Path>,
     contents: impl AsRef<[u8]>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), std::io::Error> {
     let path = dir.as_ref().join(file);
     Ok(fs::write(path, contents).await?)
 }
